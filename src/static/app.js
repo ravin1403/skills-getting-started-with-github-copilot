@@ -12,28 +12,177 @@ document.addEventListener("DOMContentLoaded", () => {
 
       // Clear loading message
       activitiesList.innerHTML = "";
+      // Reset activity select to default option to avoid duplicates
+      if (activitySelect) {
+        activitySelect.innerHTML = '<option value="">-- Select an activity --</option>';
+      }
 
       // Populate activities list
       Object.entries(activities).forEach(([name, details]) => {
         const activityCard = document.createElement("div");
         activityCard.className = "activity-card";
 
-        const spotsLeft = details.max_participants - details.participants.length;
+        let spotsLeft = details.max_participants - details.participants.length;
 
+        // Main content (description, schedule, availability)
         activityCard.innerHTML = `
           <h4>${name}</h4>
           <p>${details.description}</p>
           <p><strong>Schedule:</strong> ${details.schedule}</p>
-          <p><strong>Availability:</strong> ${spotsLeft} spots left</p>
+          <p class="availability"><strong>Availability:</strong> ${spotsLeft} spots left</p>
         `;
+
+        // Participants section (built with DOM methods to avoid injection)
+        const participantsDiv = document.createElement("div");
+        participantsDiv.className = "participants-section";
+        const participantsTitle = document.createElement("strong");
+        participantsTitle.textContent = "Participants:";
+        participantsDiv.appendChild(participantsTitle);
+
+        const ul = document.createElement("ul");
+        ul.className = "participants-list";
+
+        // Helper to show a confirmation modal
+        function showConfirm(message) {
+          return new Promise((resolve) => {
+            // Create overlay
+            const overlay = document.createElement("div");
+            overlay.className = "confirm-overlay";
+
+            const modal = document.createElement("div");
+            modal.className = "confirm-modal";
+
+            const msg = document.createElement("p");
+            msg.textContent = message;
+
+            const buttons = document.createElement("div");
+            buttons.className = "confirm-buttons";
+
+            const yes = document.createElement("button");
+            yes.className = "confirm-btn confirm-btn-confirm";
+            yes.textContent = "Yes";
+
+            const no = document.createElement("button");
+            no.className = "confirm-btn confirm-btn-cancel";
+            no.textContent = "Cancel";
+
+            buttons.appendChild(no);
+            buttons.appendChild(yes);
+
+            modal.appendChild(msg);
+            modal.appendChild(buttons);
+            overlay.appendChild(modal);
+            document.body.appendChild(overlay);
+
+            // Focus the cancel button for safety
+            no.focus();
+
+            function cleanup(result) {
+              yes.removeEventListener("click", onYes);
+              no.removeEventListener("click", onNo);
+              document.body.removeChild(overlay);
+              resolve(result);
+            }
+
+            function onYes(e) {
+              e.preventDefault();
+              cleanup(true);
+            }
+
+            function onNo(e) {
+              e.preventDefault();
+              cleanup(false);
+            }
+
+            yes.addEventListener("click", onYes);
+            no.addEventListener("click", onNo);
+          });
+        }
+
+        // Helper to unregister a participant
+        async function unregisterParticipant(activityName, email, listItem, availabilityEl) {
+          try {
+            const res = await fetch(
+              `/activities/${encodeURIComponent(activityName)}/participant?email=${encodeURIComponent(email)}`,
+              { method: "DELETE" }
+            );
+            const body = await res.json().catch(() => ({}));
+
+            if (res.ok) {
+              // remove list item from DOM
+              listItem.remove();
+
+              // update spots left (one more spot becomes available)
+              spotsLeft = Number(spotsLeft) + 1;
+              availabilityEl.textContent = `${spotsLeft} spots left`;
+
+              // if no participants left, show empty state
+              const remaining = ul.querySelectorAll("li:not(.empty)").length;
+              if (remaining === 0) {
+                const emptyLi = document.createElement("li");
+                emptyLi.textContent = "No participants yet";
+                emptyLi.className = "empty";
+                ul.appendChild(emptyLi);
+              }
+            } else {
+              // show basic error feedback in console and alert
+              console.error("Failed to unregister:", body.detail || body.message || res.statusText);
+              alert(body.detail || body.message || "Failed to unregister participant");
+            }
+          } catch (err) {
+            console.error("Error unregistering participant:", err);
+            alert("Error unregistering participant. See console for details.");
+          }
+        }
+
+        if (Array.isArray(details.participants) && details.participants.length) {
+          details.participants.forEach((p) => {
+            const li = document.createElement("li");
+
+            const span = document.createElement("span");
+            span.textContent = p;
+            span.className = "participant-email";
+
+            const btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = "delete-btn";
+            btn.title = `Unregister ${p}`;
+            btn.setAttribute("aria-label", `Unregister ${p}`);
+            btn.textContent = "✖";
+
+            btn.addEventListener("click", async (e) => {
+              e.preventDefault();
+              const confirmed = await showConfirm(`Unregister ${p} from \"${name}\"?`);
+              if (!confirmed) return;
+              // remove any existing empty placeholder before action
+              const placeholder = ul.querySelector("li.empty");
+              if (placeholder) placeholder.remove();
+              unregisterParticipant(name, p, li, activityCard.querySelector(".availability"));
+            });
+
+            li.appendChild(span);
+            li.appendChild(btn);
+            ul.appendChild(li);
+          });
+        } else {
+          const li = document.createElement("li");
+          li.textContent = "No participants yet";
+          li.className = "empty";
+          ul.appendChild(li);
+        }
+
+        participantsDiv.appendChild(ul);
+        activityCard.appendChild(participantsDiv);
 
         activitiesList.appendChild(activityCard);
 
         // Add option to select dropdown
-        const option = document.createElement("option");
-        option.value = name;
-        option.textContent = name;
-        activitySelect.appendChild(option);
+        if (activitySelect) {
+          const option = document.createElement("option");
+          option.value = name;
+          option.textContent = name;
+          activitySelect.appendChild(option);
+        }
       });
     } catch (error) {
       activitiesList.innerHTML = "<p>Failed to load activities. Please try again later.</p>";
@@ -62,6 +211,8 @@ document.addEventListener("DOMContentLoaded", () => {
         messageDiv.textContent = result.message;
         messageDiv.className = "success";
         signupForm.reset();
+        // Refresh activities so UI reflects the new participant immediately
+        await fetchActivities();
       } else {
         messageDiv.textContent = result.detail || "An error occurred";
         messageDiv.className = "error";
